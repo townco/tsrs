@@ -34,7 +34,7 @@ pub use checkerpool::{
     set_max_memory_from_cli, use_go_default_checker_count,
 };
 pub use emitter::EmitOnly;
-pub use file_include::FileIncludeReason;
+pub use file_include::{fileIncludeKind, FileIncludeReason};
 pub use fileloader::{
     DuplicateSourceFile, LibFile, content_mapper_initialization_diagnostic,
     content_mapper_project_diagnostic, content_mapper_project_error_diagnostic,
