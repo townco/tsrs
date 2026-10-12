@@ -120,6 +120,17 @@ impl FileIncludeReason {
         self.kind == fileIncludeKind::RootFile
     }
 
+    /// Why the program includes the file.
+    pub fn kind(&self) -> fileIncludeKind {
+        self.kind
+    }
+
+    /// The path of the file whose reference includes the file. Only the kinds
+    /// from `Import` to `LibReferenceDirective` have one.
+    pub fn referencing_file(&self) -> Option<&'static str> {
+        self.referenced_file.as_ref().map(|data| data.file)
+    }
+
     pub(crate) fn as_referenced_file_data(&self) -> &referencedFileData {
         self.referenced_file.as_ref().unwrap()
     }
