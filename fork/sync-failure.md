@@ -1,24 +1,12 @@
-Fork sync did not both fast-forward main and publish the include-reasons branch.
-Nothing was force-pushed and no branch was deleted.
+Fork sync crashed before it could finish.
 
-Upstream main: 8f135f106a637cf76f0395f146d0417f5287046e
-Fork main before this run: c6695157c3611ea85425915e4194f990f7d1046c
-Patch branch: town/include-reasons-8f135f1
+Error: gh pr create --repo townco/tsrs --base main --head town/fork-sync-failure --draft --title Fork sync failed: include-reasons patch --body-file /tmp/tsrs-fork-sync-failure.txt exited 1
 
-## Main
-fast-forward push of main was rejected:
-remote: error: GH013: Repository rule violations found for refs/heads/main.        
-remote: Review all repository rules at https://github.com/townco/tsrs/rules?ref=refs%2Fheads%2Fmain        
-remote: 
-remote: - Changes must be made through a pull request.        
-remote: 
-To https://github.com/townco/tsrs
- ! [remote rejected]   8f135f106a637cf76f0395f146d0417f5287046e -> main (push declined due to repository rule violations)
-error: failed to push some refs to 'https://github.com/townco/tsrs'
-
-## Patch
-town/include-reasons-8f135f1 already has this tree
-
-Do not merge this pull request. It only records the failure. Regenerating the stack is documented in docs/FORK.md.
-
-Direct pushes to main are rejected by the ruleset "Human-only default branch updates" unless a bypass actor fast-forwards it. This job does not merge upstream into main: a merge commit would end the pure fast-forward.
+pull request create failed: GraphQL: Resource not accessible by integration (createPullRequest)
+    at run (file:///workspace/tools/fork-sync.mjs:48:15)
+    at publishFailure (file:///workspace/tools/fork-sync.mjs:240:29)
+    at main (file:///workspace/tools/fork-sync.mjs:337:17)
+    at file:///workspace/tools/fork-sync.mjs:348:5
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
