@@ -55,8 +55,12 @@ of that commit onto current upstream `main`, not a new patch.
 5. Otherwise run, in the worktree, with the toolchain in that tree's `rust-toolchain.toml`:
    `cargo fmt --all --check`,
    `cargo clippy --locked --all-targets --workspace` with warnings denied,
-   `cargo check --locked --workspace --all-targets` with warnings denied,
-   and `cargo test --locked --workspace`.
+   and `cargo check --locked --workspace --all-targets` with warnings denied.
+   `cargo test --locked --workspace` then runs with Node at the major version in that
+   tree's `.node-version` and with `microsoft/TypeScript` checked out at the
+   `workspace.metadata.typescript` commit, sparse, into `ts-ref` (the same paths CI
+   uses: `tsc/testdata`, `packages/typescript/{src,lib,vendor}`, `tools/scripts/tsc`).
+   The workspace tests fail, rather than skip, when that checkout is missing.
    Any failure stops the job before the push.
 6. Tag the previous `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not
    force-moved). Then `git push --force-with-lease` the new tip to `town/patched`. A lost race

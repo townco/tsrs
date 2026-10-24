@@ -36,6 +36,10 @@ jobs:
           save-cache: false
           cache-key: fork-sync
 
+      # Reads .node-version from this checkout, which is the control branch.
+      # tools/fork-sync.mjs installs the candidate worktree's version when it differs.
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
+
       - name: Cherry-pick, test, and push town/patched
         env:
           GH_TOKEN: ${{ github.token }}

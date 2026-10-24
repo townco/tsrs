@@ -2,6 +2,7 @@
 // Rebuild town/patched as oxc-project/tsrs main plus fork/patches.txt.
 // Cherry-pick only. Never pushes the default branch. See docs/FORK.md.
 
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -237,6 +238,92 @@ function toolchainChannel(worktree) {
     return match[1];
 }
 
+function typescriptCommit(worktree) {
+    const text = readFileSync(path.join(worktree, "Cargo.toml"), "utf8");
+    const section = text.split("[workspace.metadata.typescript]")[1];
+    if (!section) throw new SyncFailure("Cargo.toml has no [workspace.metadata.typescript]");
+    const body = section.split("\n[")[0];
+    const match = body.match(/^\s*commit\s*=\s*"([0-9a-f]{40})"/m);
+    if (!match) throw new SyncFailure("Cargo.toml has no typescript commit pin");
+    return match[1];
+}
+
+function prepareTypeScript(worktree) {
+    const commit = typescriptCommit(worktree);
+    const dest = path.join(worktree, "ts-ref");
+    const marker = path.join(dest, "packages/typescript/src/api/sync/client.ts");
+    if (existsSync(dest)) {
+        const head = git(["rev-parse", "HEAD"], { cwd: dest, ok: true });
+        if (head.code === 0 && head.stdout.trim() === commit && existsSync(marker)) return;
+        rmSync(dest, { recursive: true, force: true });
+    }
+    git(["init", "-b", "main", dest]);
+    git(["-C", dest, "remote", "add", "origin", "https://github.com/microsoft/TypeScript.git"]);
+    git(["-C", dest, "sparse-checkout", "init", "--cone"]);
+    git(
+        [
+            "-C",
+            dest,
+            "sparse-checkout",
+            "set",
+            "tsc/testdata",
+            "packages/typescript/src",
+            "packages/typescript/lib",
+            "packages/typescript/vendor",
+            "tools/scripts/tsc",
+        ],
+    );
+    git(["-C", dest, "fetch", "--depth", "1", "--filter=blob:none", "origin", commit]);
+    git(["-c", "advice.detachedHead=false", "-C", dest, "checkout", "FETCH_HEAD"]);
+    const head = git(["rev-parse", "HEAD"], { cwd: dest }).stdout.trim();
+    if (head !== commit || !existsSync(marker)) {
+        throw new SyncFailure(`TypeScript checkout at ${dest} is ${head}, expected ${commit}`);
+    }
+    console.log(`typescript ${commit}`);
+}
+
+function ensureNode(worktree) {
+    const requested = readFileSync(path.join(worktree, ".node-version"), "utf8").trim();
+    if (!/^\d+(?:\.\d+\.\d+)?$/.test(requested)) throw new SyncFailure(`refusing Node version ${requested}`);
+    const major = requested.split(".")[0];
+    const current = run(["node", "--version"], { ok: true }).stdout.trim();
+    const matchesExact = current === `v${requested}`;
+    const matchesMajor = !requested.includes(".") && current.startsWith(`v${major}.`);
+    if (matchesExact || matchesMajor) return process.env.PATH ?? "";
+    const arch = run(["uname", "-m"]).stdout.trim();
+    const nodeArch = arch === "x86_64" ? "x64" : arch === "aarch64" ? "arm64" : "";
+    if (!nodeArch) throw new SyncFailure(`unsupported architecture ${arch} for Node ${requested}`);
+    const base = requested.includes(".")
+        ? `https://nodejs.org/dist/v${requested}`
+        : `https://nodejs.org/dist/latest-v${requested}.x`;
+    const sums = run(["curl", "-fsSL", `${base}/SHASUMS256.txt`]).stdout;
+    const row = sums.split("\n").find((line) => line.trim().endsWith(`linux-${nodeArch}.tar.xz`));
+    if (!row) throw new SyncFailure(`no official linux-${nodeArch} Node tarball listed at ${base}`);
+    const [expected, name] = row.trim().split(/\s+/);
+    if (!/^node-v\d+\.\d+\.\d+-linux-(x64|arm64)\.tar\.xz$/.test(name) || !/^[0-9a-f]{64}$/.test(expected)) {
+        throw new SyncFailure(`refusing Node tarball entry ${clip(row, 200)}`);
+    }
+    const version = name.slice("node-v".length, name.indexOf("-linux-"));
+    const prefix = path.join(tmpdir(), `tsrs-node-v${version}`);
+    const bin = path.join(prefix, "bin", "node");
+    if (!existsSync(bin)) {
+        const tarPath = path.join(tmpdir(), name);
+        run(["curl", "-fsSL", "-o", tarPath, `${base}/${name}`]);
+        const actual = createHash("sha256").update(readFileSync(tarPath)).digest("hex");
+        if (actual !== expected) {
+            rmSync(tarPath, { force: true });
+            throw new SyncFailure(`Node tarball ${name} checksum did not match SHASUMS256.txt`);
+        }
+        mkdirSync(prefix, { recursive: true });
+        run(["tar", "-xJf", tarPath, "-C", prefix, "--strip-components=1"]);
+        rmSync(tarPath, { force: true });
+    }
+    const installed = run([bin, "--version"]).stdout.trim();
+    if (!installed.startsWith(`v${major}.`)) throw new SyncFailure(`installed Node ${installed} does not match ${requested}`);
+    console.log(`node ${installed}`);
+    return `${path.join(prefix, "bin")}${path.delimiter}${process.env.PATH ?? ""}`;
+}
+
 function runGates(worktree) {
     const channel = toolchainChannel(worktree);
     console.log(`toolchain ${channel}`);
@@ -244,16 +331,18 @@ function runGates(worktree) {
         ["rustup", "toolchain", "install", channel, "--profile", "minimal", "--component", "rustfmt,clippy"],
         { inherit: true },
     );
-    const cargo = (args) =>
+    const cargo = (args, env) =>
         run(["cargo", `+${channel}`, ...args], {
             cwd: worktree,
             inherit: true,
-            env: { RUSTUP_TOOLCHAIN: channel, CARGO_TERM_COLOR: "always" },
+            env: { RUSTUP_TOOLCHAIN: channel, CARGO_TERM_COLOR: "always", ...env },
         });
     cargo(["fmt", "--all", "--check"]);
     cargo(["clippy", "--locked", "--all-targets", "--workspace", "--config", 'build.warnings="deny"']);
     cargo(["check", "--locked", "--workspace", "--all-targets", "--config", 'build.warnings="deny"']);
-    cargo(["test", "--locked", "--workspace"]);
+    const nodePath = ensureNode(worktree);
+    prepareTypeScript(worktree);
+    cargo(["test", "--locked", "--workspace"], { PATH: nodePath });
 }
 
 function remoteTag(name) {
