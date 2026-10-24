@@ -33,7 +33,14 @@ pub use checkerpool::{
     set_max_memory_from_cli, use_go_default_checker_count,
 };
 pub use emitter::EmitOnly;
-pub use file_include::FileIncludeReason;
+pub use file_include::{FileIncludeKind, FileIncludeReason};
+/// Name of [`FileIncludeKind`] from before the Rust rename in #743.
+/// townco/town's graph context still imports it.
+#[expect(
+    non_camel_case_types,
+    reason = "pre-#743 name still imported by townco/town's include-reason consumer"
+)]
+pub type fileIncludeKind = FileIncludeKind;
 pub use fileloader::{
     DuplicateSourceFile, LibFile, content_mapper_initialization_diagnostic,
     content_mapper_project_diagnostic, content_mapper_project_error_diagnostic,
