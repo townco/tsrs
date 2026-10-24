@@ -1,0 +1,7 @@
+# Commits cherry-picked, in order, onto https://github.com/oxc-project/tsrs main.
+# One full 40-character SHA per line. A line starting with # is a comment.
+# Each commit must stay reachable from a branch or a fork-backup-* tag in this repository.
+# Replay drops a commit that is already in upstream history or whose diff is empty, and
+# does not create an empty commit. Remove a dropped SHA from this file in a pull request
+# to main; the daily job cannot push main.
+4c2e40b6df8baeb657a2cd43eec7b17a79c61086

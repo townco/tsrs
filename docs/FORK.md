@@ -1,63 +1,106 @@
-# Fork sync
+# Fork
 
-`townco/tsrs` tracks [oxc-project/tsrs](https://github.com/oxc-project/tsrs). `main` is a mirror of
-upstream `main` and is updated only by fast-forward. The town patch stack is one commit, replayed
-onto each new upstream `main` as `town/include-reasons-<7 hex digits of upstream>`.
+`townco/tsrs` is a fork of [oxc-project/tsrs](https://github.com/oxc-project/tsrs) (the repository
+previously published as `maschwenk/tsrs`). It is a patch stack on upstream `main`, not a second
+history of upstream.
+
+Two refs, with different jobs:
+
+| Ref | What it is |
+| --- | --- |
+| `main` | The default branch and the control branch. It holds this document, `fork/patches.txt`, `tools/fork-sync.mjs`, and `.github/workflows/fork-sync.yml`. It does not track upstream commit-for-commit. |
+| `town/patched` | The one moving branch consumers build. Each sync rebuilds it as upstream `main` plus the commits in `fork/patches.txt`. |
+
+`main` is already the default branch. Nothing in the sync changes that setting or the ruleset
+"Human-only default branch updates". Scheduled workflows run from the default branch, so the
+workflow file has to be on `main`. The job never pushes `main`, so it never needs a bypass of
+that ruleset and it never needs a human to fast-forward `main`.
 
 ## The stack
 
-`fork/include-reasons.patch` is the whole stack. It makes `FileIncludeReason::kind` and
-`FileIncludeReason::referencing_file` public, re-exports `FileIncludeKind`, and keeps the pre-#743
-name `fileIncludeKind` as a type alias. `townco/town`'s graph context imports that alias.
+`fork/patches.txt` is the stack: full commit SHAs, cherry-picked in order. The sync does not use
+`git apply`.
 
-These three branches are that same change on different bases. Do not delete them.
-`townco/town` pins `f502bb63865ae942cb109b46c70079cbcc56d9a6`.
+The current commit makes `FileIncludeReason::kind` and `FileIncludeReason::referencing_file`
+public, re-exports `FileIncludeKind`, and keeps the pre-#743 name `fileIncludeKind` as a type
+alias. `townco/town`'s graph context imports that alias. Upstream `0d3458e53f914d91865be4a838b4c15464ecfc61`
+(`#761`) narrowed field visibility and did not add those accessors, so the commit stays.
+
+These older branches are the same change on older bases. Do not delete them and do not
+force-push them. `townco/town` has pinned `f502bb63865ae942cb109b46c70079cbcc56d9a6`.
 
 | Branch | Commit | Base |
 | --- | --- | --- |
 | `town/include-reasons` | `8d5c0a5e9337a33be4c1386065140cb7e0a5ade4` | `034373ca` (`#295`) |
 | `town/include-reasons-0.18` | `f502bb63865ae942cb109b46c70079cbcc56d9a6` | `v0.18.0` (`5f92808b`) |
 | `town/include-reasons-c669515` | `a161962970e149b4de0615dd29d4a31cabc90b23` | `c6695157` |
+| `town/include-reasons-8f135f1` | `4c2e40b6df8baeb657a2cd43eec7b17a79c61086` | `8f135f106` |
 
-The patch was regenerated against upstream `8f135f106a637cf76f0395f146d0417f5287046e`. Upstream
-renamed `fileIncludeKind` to `FileIncludeKind` in `2fc76e34` (`#743`) and still leaves the reason
-fields crate-private, so the accessors stayed. Nothing from the stack was dropped.
+`4c2e40b6df8baeb657a2cd43eec7b17a79c61086` is the source commit in `fork/patches.txt`. The tag
+`fork-backup-4c2e40b6df8baeb657a2cd43eec7b17a79c61086` points at it. `town/patched` is the replay
+of that commit onto current upstream `main`, not a new patch.
 
 ## What the daily job does
 
-`.github/workflows/fork-sync.yml` runs `node tools/fork-sync.mjs`:
+`.github/workflows/fork-sync.yml` runs `node tools/fork-sync.mjs` at 03:00
+`America/Los_Angeles`, and on manual dispatch, only in `townco/tsrs`:
 
-1. Fetch `oxc-project/tsrs` `main`.
-2. Fast-forward fork `main` when it is an ancestor of upstream. A rejected push, or a main that is
-   not an ancestor, is a failure. The job does not merge and does not force-push.
-3. Apply `fork/include-reasons.patch` onto upstream `main` in a temporary worktree.
-4. If `town/include-reasons-<sha>` already exists with that tree, stop. If it exists with a
-   different tree, stop without pushing. Otherwise run `cargo test --locked --profile dev -p
-   tsrs_compiler --lib` and push the branch.
-5. On failure, open or update one draft pull request titled `Fork sync failed:
-   include-reasons patch` from `town/fork-sync-failure`. townco/tsrs has GitHub
-   issues disabled. A later successful run closes that pull request. The same
-   failure text is not pushed again. Do not merge the pull request.
+1. Require the Actions secret `FORK_PUSH_TOKEN`. If it is missing, stop with that stated and do
+   not push `town/patched`. The job does not fall back to `GITHUB_TOKEN` for that push.
+2. Fetch upstream `main` and the commits named in `fork/patches.txt`.
+3. In a temporary worktree at upstream `main`, `git cherry-pick -x` each commit. A commit already
+   in upstream history, or whose cherry-pick is empty, is dropped and is not committed again. A
+   conflict aborts the replay. Nothing is pushed, and `town/patched` stays at its previous tip.
+4. If `town/patched` already has the replayed tree, stop. The same tree is not given a new SHA.
+5. Otherwise run, in the worktree, with the toolchain in that tree's `rust-toolchain.toml`:
+   `cargo fmt --all --check`,
+   `cargo clippy --locked --all-targets --workspace` with warnings denied,
+   `cargo check --locked --workspace --all-targets` with warnings denied,
+   and `cargo test --locked --workspace`.
+   Any failure stops the job before the push.
+6. Tag the previous `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not
+   force-moved). Then `git push --force-with-lease` the new tip to `town/patched`. A lost race
+   leaves the previous tip in place.
 
-The ruleset "Human-only default branch updates" rejects direct pushes to `main`, including a pure
-fast-forward. A bypass actor has to push that fast-forward. Merging this workflow onto `main` also
-ends the pure fast-forward, because upstream will not contain the workflow commit. Fast-forward
-`main` to upstream before merging this change if the mirror should move first.
+A failed run opens or updates one draft pull request, `Fork sync failed`, from
+`town/fork-sync-failure`. This repository has GitHub issues disabled. The pull request records
+the failure. Do not merge it. A later successful run closes it. `GITHUB_TOKEN` can push that
+branch and edit the pull request; that path does not need `FORK_PUSH_TOKEN`.
 
-## Regenerating by hand
+`node tools/fork-sync.mjs --dry-run` fetches and cherry-picks without the secret, without gates,
+and without pushing. `--dry-run --test` also runs the gates.
 
-From a checkout that already has `fork/include-reasons.patch`:
+## Push token
 
-```sh
-git fetch https://github.com/oxc-project/tsrs.git main
-git worktree add --detach /tmp/tsrs-replay FETCH_HEAD
-git -C /tmp/tsrs-replay apply "$PWD/fork/include-reasons.patch"
-cargo test --locked --profile dev -p tsrs_compiler --lib --manifest-path /tmp/tsrs-replay/Cargo.toml
-```
+Create the repository Actions secret `FORK_PUSH_TOKEN` by hand. Do not put the token in the
+repository, and do not grant it a bypass of "Human-only default branch updates".
 
-Commit on that worktree and push `town/include-reasons-` plus the first 7 hex digits of `FETCH_HEAD`.
-To change the stack, edit the worktree, commit, and replace `fork/include-reasons.patch` with
-`git diff <upstream> <that commit> -- crates/tsrs_compiler`.
+The token is a fine-grained personal access token (or a GitHub App installation token) whose
+repository access is only `townco/tsrs`, with Contents read and write. Metadata read is
+required by GitHub. Workflows permission is not required: `town/patched` is produced by
+cherry-pick of the listed commits and the job never pushes workflow files. The built-in
+`GITHUB_TOKEN` is not used for this push because a later patch that touches
+`.github/workflows` cannot be pushed with it, and a silent fallback is how a sync looks green
+while the branch does not move.
 
-`node tools/fork-sync.mjs --dry-run` fetches, checks the fast-forward, and applies the patch without
-pushing or editing issues. `--dry-run --test` also runs the compiler tests.
+## Changing the stack
+
+Cherry-pick the current source onto a fresh upstream `main`, edit, and commit. Push that commit
+so it stays reachable (a branch or a `fork-backup-*` tag). Replace the line in `fork/patches.txt`
+with the new full SHA, in a pull request to `main`. The next sync cherry-picks that SHA. Until
+the pull request is merged, the scheduled job still replays the previous list.
+
+When the job logs that a SHA was dropped, delete that line in a pull request to `main`. Leaving
+it in the list is harmless: the next run drops it again and still replays the others.
+
+## Why the consumable branch is not `main`
+
+The maintained branches of `gkze/opencode` and `gkze/opencodex` are themselves the rebased
+upstream history. When that replay fails, the branch people build falls behind upstream and
+stays there until the sync is repaired. This fork keeps the control files on `main` and rebuilds
+`town/patched` from current upstream on every run, so a control commit that is not in upstream
+does not have to be fast-forwarded, merged, or force-pushed onto `main`. A conflict does not
+create a merge commit and does not move `town/patched`.
+
+Backup tags are not deleted by the job. Restoring a previous tip is `git push --force-with-lease`
+of that tag back to `town/patched`, done deliberately, not by the schedule.

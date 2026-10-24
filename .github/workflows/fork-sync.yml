@@ -1,11 +1,14 @@
 name: Fork sync
 
-# Keeps the townco/tsrs fork aligned with oxc-project/tsrs. See docs/FORK.md.
+# Replays fork/patches.txt onto oxc-project/tsrs main and moves town/patched.
 # Scheduled workflows run only from the default branch, so this file has to live on main.
+# The job never pushes main. See docs/FORK.md.
 
 on:
   schedule:
-    - cron: "17 6 * * *"
+    # 03:00 America/Los_Angeles, including daylight-saving changes.
+    - cron: "0 3 * * *"
+      timezone: America/Los_Angeles
   workflow_dispatch:
 
 permissions:
@@ -18,9 +21,10 @@ concurrency:
 
 jobs:
   sync:
-    name: Fast-forward main and replay include-reasons
+    if: github.repository == 'townco/tsrs'
+    name: Replay the patch stack onto upstream main
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,10 +33,11 @@ jobs:
 
       - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         with:
-          save-cache: true
+          save-cache: false
           cache-key: fork-sync
 
-      - name: Sync fork
+      - name: Cherry-pick, test, and push town/patched
         env:
           GH_TOKEN: ${{ github.token }}
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
         run: node tools/fork-sync.mjs
