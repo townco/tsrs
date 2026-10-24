@@ -139,6 +139,17 @@ impl FileIncludeReason {
         self.kind == FileIncludeKind::RootFile
     }
 
+    /// Why the program includes the file.
+    pub fn kind(&self) -> FileIncludeKind {
+        self.kind
+    }
+
+    /// The path of the file whose reference includes the file. Only the kinds
+    /// from `Import` to `LibReferenceDirective` have one.
+    pub fn referencing_file(&self) -> Option<&'static str> {
+        self.referenced_file.as_ref().map(|data| data.file)
+    }
+
     pub(crate) fn as_referenced_file_data(&self) -> &ReferencedFileData {
         self.referenced_file.as_ref().unwrap()
     }
@@ -545,4 +556,21 @@ fn compute_reference_file_related_info(
             .diagnostic_at(&diagnostics::FILE_IS_INCLUDED_VIA_LIBRARY_REFERENCE_HERE, &[]),
         _ => panic!("unknown reason: {:?}", r.kind),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_and_referencing_file_follow_the_reason() {
+        let root = FileIncludeReason::new(FileIncludeKind::RootFile);
+        assert_eq!(root.kind(), FileIncludeKind::RootFile);
+        assert_eq!(root.referencing_file(), None);
+
+        let imported =
+            FileIncludeReason::new_referenced(FileIncludeKind::Import, "src/a.ts", Some(0), None);
+        assert_eq!(imported.kind(), crate::fileIncludeKind::Import);
+        assert_eq!(imported.referencing_file(), Some("src/a.ts"));
+    }
 }
