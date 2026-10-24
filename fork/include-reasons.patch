@@ -1,0 +1,63 @@
+diff --git a/crates/tsrs_compiler/src/file_include.rs b/crates/tsrs_compiler/src/file_include.rs
+index 74234bce..925c522d 100644
+--- a/crates/tsrs_compiler/src/file_include.rs
++++ b/crates/tsrs_compiler/src/file_include.rs
+@@ -139,6 +139,17 @@ impl FileIncludeReason {
+         self.kind == FileIncludeKind::RootFile
+     }
+ 
++    /// Why the program includes the file.
++    pub fn kind(&self) -> FileIncludeKind {
++        self.kind
++    }
++
++    /// The path of the file whose reference includes the file. Only the kinds
++    /// from `Import` to `LibReferenceDirective` have one.
++    pub fn referencing_file(&self) -> Option<&'static str> {
++        self.referenced_file.as_ref().map(|data| data.file)
++    }
++
+     pub(crate) fn as_referenced_file_data(&self) -> &ReferencedFileData {
+         self.referenced_file.as_ref().unwrap()
+     }
+@@ -546,3 +557,20 @@ fn compute_reference_file_related_info(
+         _ => panic!("unknown reason: {:?}", r.kind),
+     })
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn kind_and_referencing_file_follow_the_reason() {
++        let root = FileIncludeReason::new(FileIncludeKind::RootFile);
++        assert_eq!(root.kind(), FileIncludeKind::RootFile);
++        assert_eq!(root.referencing_file(), None);
++
++        let imported =
++            FileIncludeReason::new_referenced(FileIncludeKind::Import, "src/a.ts", Some(0), None);
++        assert_eq!(imported.kind(), crate::fileIncludeKind::Import);
++        assert_eq!(imported.referencing_file(), Some("src/a.ts"));
++    }
++}
+diff --git a/crates/tsrs_compiler/src/lib.rs b/crates/tsrs_compiler/src/lib.rs
+index 8ac67f60..13f56a39 100644
+--- a/crates/tsrs_compiler/src/lib.rs
++++ b/crates/tsrs_compiler/src/lib.rs
+@@ -33,7 +33,14 @@ pub use checkerpool::{
+     set_max_memory_from_cli, use_go_default_checker_count,
+ };
+ pub use emitter::EmitOnly;
+-pub use file_include::FileIncludeReason;
++pub use file_include::{FileIncludeKind, FileIncludeReason};
++/// Name of [`FileIncludeKind`] from before the Rust rename in #743.
++/// townco/town's graph context still imports it.
++#[expect(
++    non_camel_case_types,
++    reason = "pre-#743 name still imported by townco/town's include-reason consumer"
++)]
++pub type fileIncludeKind = FileIncludeKind;
+ pub use fileloader::{
+     DuplicateSourceFile, LibFile, content_mapper_initialization_diagnostic,
+     content_mapper_project_diagnostic, content_mapper_project_error_diagnostic,
