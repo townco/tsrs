@@ -24,7 +24,9 @@ that ruleset and it never needs a human to fast-forward `main`.
 The current commit makes `FileIncludeReason::kind` and `FileIncludeReason::referencing_file`
 public, re-exports `FileIncludeKind`, and keeps the pre-#743 name `fileIncludeKind` as a type
 alias. `townco/town`'s graph context imports that alias. Upstream `0d3458e53f914d91865be4a838b4c15464ecfc61`
-(`#761`) narrowed field visibility and did not add those accessors, so the commit stays.
+(`#761`) narrowed field visibility and did not add those accessors, so the commit stays. Upstream
+`811d21478f7f4bffac49a93f172a5091735f6540` (`#797`) builds no unit-test harness and lints against tests in
+`src`, so the commit's test is `crates/tsrs_compiler/tests/integration/file_include_test.rs`.
 
 These older branches are the same change on older bases. Do not delete them and do not
 force-push them. `townco/town` has pinned `f502bb63865ae942cb109b46c70079cbcc56d9a6`.
@@ -36,9 +38,11 @@ force-push them. `townco/town` has pinned `f502bb63865ae942cb109b46c70079cbcc56d
 | `town/include-reasons-c669515` | `a161962970e149b4de0615dd29d4a31cabc90b23` | `c6695157` |
 | `town/include-reasons-8f135f1` | `4c2e40b6df8baeb657a2cd43eec7b17a79c61086` | `8f135f106` |
 
-`4c2e40b6df8baeb657a2cd43eec7b17a79c61086` is the source commit in `fork/patches.txt`. The tag
-`fork-backup-4c2e40b6df8baeb657a2cd43eec7b17a79c61086` points at it. `town/patched` is the replay
-of that commit onto current upstream `main`, not a new patch.
+`746443969258121122ef25c8886f02c4ec0062a2` is the source commit in `fork/patches.txt`, on base
+`dc4ea354`. It is `4c2e40b6` with the inline unit test moved to the integration binary. The tag
+`fork-backup-746443969258121122ef25c8886f02c4ec0062a2` points at it, and
+`fork-backup-4c2e40b6df8baeb657a2cd43eec7b17a79c61086` still points at the previous source.
+`town/patched` is the replay of the source commit onto current upstream `main`, not a new patch.
 
 ## What the daily job does
 
