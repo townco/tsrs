@@ -342,7 +342,11 @@ function runGates(worktree) {
     cargo(["check", "--locked", "--workspace", "--all-targets", "--config", 'build.warnings="deny"']);
     const nodePath = ensureNode(worktree);
     prepareTypeScript(worktree);
-    cargo(["test", "--locked", "--workspace"], { PATH: nodePath });
+    // Upstream CI's test command: the `ci` profile (release with debug assertions and overflow
+    // checks). A debug build misses wall-time budgets in the tsrs_api integration tests.
+    cargo(["test", "--profile", "ci", "--locked", "--workspace", "--config", 'build.warnings="deny"'], {
+        PATH: nodePath,
+    });
 }
 
 function remoteTag(name) {

@@ -60,7 +60,9 @@ force-push them. `townco/town` has pinned `f502bb63865ae942cb109b46c70079cbcc56d
    `cargo fmt --all --check`,
    `cargo clippy --locked --all-targets --workspace` with warnings denied,
    and `cargo check --locked --workspace --all-targets` with warnings denied.
-   `cargo test --locked --workspace` then runs with Node at the major version in that
+   `cargo test --profile ci --locked --workspace` with warnings denied (upstream CI's command:
+   a debug build misses the wall-time budgets of the `tsrs_api` integration tests) then runs
+   with Node at the major version in that
    tree's `.node-version` and with `microsoft/TypeScript` checked out at the
    `workspace.metadata.typescript` commit, sparse, into `ts-ref` (the same paths CI
    uses: `tsc/testdata`, `packages/typescript/{src,lib,vendor}`, `tools/scripts/tsc`).
