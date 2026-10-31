@@ -9,7 +9,7 @@ Two refs, with different jobs:
 | Ref | What it is |
 | --- | --- |
 | `main` | The default branch and the control branch. It holds this document, `fork/patches.txt`, `tools/fork-sync.mjs`, and `.github/workflows/fork-sync.yml`. It does not track upstream commit-for-commit. |
-| `town/patched` | The one moving branch consumers build. Each sync rebuilds it as upstream `main` plus the commits in `fork/patches.txt`. |
+| `town/patched` | The one moving branch consumers build. Each sync rebuilds it as upstream `main` plus the commits in `fork/patches.txt`, with a last commit that removes `.github/workflows`. |
 
 `main` is already the default branch. Nothing in the sync changes that setting or the ruleset
 "Human-only default branch updates". Scheduled workflows run from the default branch, so the
@@ -52,6 +52,10 @@ upstream code and its build scripts and tests can run anything. `gate` is the on
 the candidate, and it holds no write credential. `replay` and `publish` hold credentials and never
 execute it. No job persists checkout credentials.
 
+A push runs the workflows in the tree it pushes, and that tree is upstream's. So `town/patched` carries
+no workflows: an upstream workflow never runs in this repository, with or without this repository's
+secrets. Consumers build crates and do not need them.
+
 `replay`, with `GITHUB_TOKEN`:
 
 1. Require the Actions secret `FORK_PUSH_TOKEN`, by reading only whether it exists. If it is missing,
@@ -62,11 +66,14 @@ execute it. No job persists checkout credentials.
    conflict aborts the replay. Nothing is pushed, and `town/patched` stays at its previous tip.
 4. If `town/patched` already has the replayed tree, stop. The same tree is not given a new SHA.
 5. Otherwise upload the candidate as an artifact, a git bundle and a record of its SHAs and of the
-   tip it replaces. The later jobs use this commit, so `gate` cannot change what is published.
+   tip it replaces. The later jobs use these commits, so `gate` cannot change what is published.
+   The candidate is two commits: the replay, and one on top that removes `.github/workflows`.
+   Step 4 compares that last commit's tree.
 
 `gate`, read-only, with the toolchain in the candidate's `rust-toolchain.toml`:
 
-6. Run the commands in the candidate's own `.github/workflows/ci.yml`: the source checks,
+6. On the replay commit, which still has its workflows, run the commands in the candidate's own
+   `.github/workflows/ci.yml`: the source checks,
    `cargo fmt --all --check`, `cargo clippy --locked --all-targets --workspace` and
    `cargo check --locked --workspace --all-targets` with warnings denied,
    `cargo test --profile ci --locked --workspace` with warnings denied (`ci` is release with debug
@@ -80,9 +87,10 @@ execute it. No job persists checkout credentials.
 
 `publish`, only after `gate` passes, with `FORK_PUSH_TOKEN`:
 
-7. Tag the previous `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not
-   force-moved). Then `git push --force-with-lease` the candidate to `town/patched`. A lost race
-   leaves the previous tip in place.
+7. Check that the last commit changes only `.github/workflows` and leaves none. Tag the previous
+   `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not force-moved). Then
+   `git push --force-with-lease` the last commit to `town/patched`. A lost race leaves the previous
+   tip in place.
 
 A failed run opens or updates one draft pull request, `Fork sync failed`, from
 `town/fork-sync-failure`. This repository has GitHub issues disabled. The pull request records
@@ -102,13 +110,13 @@ phase.
 Create the repository Actions secret `FORK_PUSH_TOKEN` by hand. Do not put the token in the
 repository, and do not grant it a bypass of "Human-only default branch updates".
 
-The token is a fine-grained personal access token (or a GitHub App installation token) whose
-repository access is only `townco/tsrs`, with Contents read and write. Metadata read is
-required by GitHub. Workflows permission is not required: `town/patched` is produced by
-cherry-pick of the listed commits and the job never pushes workflow files. The built-in
-`GITHUB_TOKEN` is not used for this push because a later patch that touches
-`.github/workflows` cannot be pushed with it, and a silent fallback is how a sync looks green
-while the branch does not move.
+The token is a fine-grained personal access token whose repository access is only `townco/tsrs`,
+with Contents and Workflows read and write. Metadata read is required by GitHub. Workflows is needed
+because the push carries upstream commits that change `.github/workflows`, even though the tip has
+none. An installation token does not fit: it expires after an hour, and this secret is stored.
+When the token expires, `publish` fails and the failure pull request records it. The built-in
+`GITHUB_TOKEN` is not used for this push because it cannot push those commits, and a silent fallback
+is how a sync looks green while the branch does not move.
 
 ## Changing the stack
 

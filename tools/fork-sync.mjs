@@ -4,6 +4,7 @@
 //
 // The candidate's code runs only in the `gate` phase, and only that phase's job holds no write
 // credential. `replay` and `publish` hold credentials and never execute the candidate.
+// town/patched carries no workflows, so the push itself starts nothing from the candidate.
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -27,6 +28,7 @@ const forceTest = process.argv.includes("--test");
 const phase = process.argv.slice(2).find((arg) => !arg.startsWith("--"));
 const artifactDir = process.env.FORK_SYNC_ARTIFACT_DIR ?? path.join(tmpdir(), "tsrs-fork-sync-artifact");
 const candidateRef = "refs/fork-sync/candidate";
+const workflowsDir = ".github/workflows";
 
 class SyncFailure extends Error {
     constructor(message) {
@@ -118,8 +120,8 @@ function requireToken() {
             "FORK_PUSH_TOKEN is missing.",
             `Fork sync will not push ${patchedBranch} or its backup tags, and it will not use GITHUB_TOKEN for that push.`,
             "Add a repository Actions secret named FORK_PUSH_TOKEN.",
-            "The value is a fine-grained personal access token, or a GitHub App installation token, whose repository access is only townco/tsrs, with Contents read and write.",
-            "Metadata read is required by GitHub. Workflows permission is not required for the current stack.",
+            "The value is a fine-grained personal access token whose repository access is only townco/tsrs, with Contents and Workflows read and write.",
+            "Metadata read is required by GitHub. docs/FORK.md says why Workflows is needed.",
             "Do not commit the token, and do not grant it a bypass of the ruleset \"Human-only default branch updates\". This job never pushes main.",
         ].join("\n"),
     );
@@ -200,6 +202,16 @@ function cherryPickOne(worktree, sha) {
     return "keep";
 }
 
+// The push to town/patched would run any workflow in the tree it pushes, and that tree is
+// upstream's. Consumers build crates and need none of them.
+function dropWorkflows(worktree) {
+    git(["rm", "-r", "-q", "--ignore-unmatch", workflowsDir], { cwd: worktree });
+    git(
+        ["-c", `user.name=${committerName}`, "-c", `user.email=${committerEmail}`, "commit", "--allow-empty", "-m", `fork: drop ${workflowsDir}`],
+        { cwd: worktree },
+    );
+}
+
 function replay(upstreamSha, shas) {
     const worktree = mkdtempSync(path.join(tmpdir(), "tsrs-fork-sync-"));
     const kept = [];
@@ -216,15 +228,17 @@ function replay(upstreamSha, shas) {
             if (outcome === "drop") dropped.push(sha);
             else kept.push(sha);
         }
-        const head = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-        const tree = git(["rev-parse", "HEAD^{tree}"], { cwd: worktree }).stdout.trim();
+        const gated = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
         if (kept.length === 0) {
-            if (head !== upstreamSha) throw new SyncFailure(`every patch was dropped but HEAD ${head} is not upstream ${upstreamSha}`);
+            if (gated !== upstreamSha) throw new SyncFailure(`every patch was dropped but HEAD ${gated} is not upstream ${upstreamSha}`);
         } else {
             const base = git(["rev-parse", `HEAD~${kept.length}`], { cwd: worktree }).stdout.trim();
-            if (base !== upstreamSha) throw new SyncFailure(`replay ${head} is not ${kept.length} commit(s) on upstream ${upstreamSha} (base ${base})`);
+            if (base !== upstreamSha) throw new SyncFailure(`replay ${gated} is not ${kept.length} commit(s) on upstream ${upstreamSha} (base ${base})`);
         }
-        return { worktree, head, tree, kept, dropped };
+        dropWorkflows(worktree);
+        const head = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
+        const tree = git(["rev-parse", "HEAD^{tree}"], { cwd: worktree }).stdout.trim();
+        return { worktree, gated, head, tree, kept, dropped };
     } catch (error) {
         removeWorktree(worktree);
         throw error;
@@ -523,17 +537,18 @@ function writeCandidate(upstreamSha, replayed, remote) {
     mkdirSync(artifactDir, { recursive: true });
     git(["update-ref", candidateRef, replayed.head]);
     git(["bundle", "create", path.join(artifactDir, "candidate.bundle"), candidateRef]);
-    const { head, tree, kept, dropped } = replayed;
+    const { gated, head, tree, kept, dropped } = replayed;
     writeFileSync(
         path.join(artifactDir, "candidate.json"),
-        JSON.stringify({ upstream: upstreamSha, head, tree, kept, dropped, remote }),
+        JSON.stringify({ upstream: upstreamSha, gated, head, tree, kept, dropped, remote }),
     );
 }
 
-// Checks out the commit the replay job recorded, which is what the gate tested and what publish pushes.
+// Loads the commits the replay job recorded: `gated` is what the gates test, and `head` is the same
+// tree without its workflows, which is what publish pushes.
 function readCandidate() {
     const candidate = JSON.parse(readFileSync(path.join(artifactDir, "candidate.json"), "utf8"));
-    for (const sha of [candidate.upstream, candidate.head, candidate.tree]) {
+    for (const sha of [candidate.upstream, candidate.gated, candidate.head, candidate.tree]) {
         if (!/^[0-9a-f]{40}$/.test(sha)) throw new SyncFailure(`candidate names ${clip(sha, 80)}, not a full SHA`);
     }
     git(["fetch", "--no-tags", path.join(artifactDir, "candidate.bundle"), `+${candidateRef}:${candidateRef}`]);
@@ -543,9 +558,17 @@ function readCandidate() {
     if (git(["rev-parse", `${candidate.head}^{tree}`]).stdout.trim() !== candidate.tree) {
         throw new SyncFailure(`${candidate.head} does not have tree ${candidate.tree}`);
     }
-    const base = git(["rev-parse", `${candidate.head}~${candidate.kept.length}`]).stdout.trim();
+    if (git(["rev-parse", `${candidate.head}~1`]).stdout.trim() !== candidate.gated) {
+        throw new SyncFailure(`${candidate.head} is not one commit on ${candidate.gated}`);
+    }
+    const left = git(["ls-tree", "-r", "--name-only", candidate.head, workflowsDir]).stdout.trim();
+    if (left) throw new SyncFailure(`${candidate.head} still has workflows:\n${clip(left, 500)}`);
+    const changed = git(["diff", "--name-only", candidate.gated, candidate.head]).stdout.trim().split("\n").filter(Boolean);
+    const other = changed.find((file) => !file.startsWith(`${workflowsDir}/`));
+    if (other) throw new SyncFailure(`${candidate.head} changes ${other} as well as the workflows`);
+    const base = git(["rev-parse", `${candidate.gated}~${candidate.kept.length}`]).stdout.trim();
     if (base !== candidate.upstream) {
-        throw new SyncFailure(`${candidate.head} is not ${candidate.kept.length} commit(s) on upstream ${candidate.upstream}`);
+        throw new SyncFailure(`${candidate.gated} is not ${candidate.kept.length} commit(s) on upstream ${candidate.upstream}`);
     }
     return candidate;
 }
@@ -583,7 +606,7 @@ function gatePhase() {
     const candidate = readCandidate();
     const worktree = mkdtempSync(path.join(tmpdir(), "tsrs-fork-sync-"));
     try {
-        git(["worktree", "add", "--detach", worktree, candidate.head]);
+        git(["worktree", "add", "--detach", worktree, candidate.gated]);
         runGates(worktree);
     } finally {
         removeWorktree(worktree);
@@ -621,6 +644,7 @@ function dryRunAll() {
             console.log(`would run the workspace gates and ${remote ? "force-with-lease " : ""}push ${patchedBranch}`);
             return;
         }
+        git(["checkout", "-q", "--detach", replayed.gated], { cwd: replayed.worktree });
         runGates(replayed.worktree);
         console.log(`gates passed; would ${remote ? "force-with-lease " : ""}push ${replayed.head} to ${patchedBranch}`);
     } finally {

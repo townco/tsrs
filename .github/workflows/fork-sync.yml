@@ -8,6 +8,7 @@ name: Fork sync
 # gate is the only job that executes it, and it holds no write credential. replay and publish hold
 # credentials and only run tools/fork-sync.mjs from this checkout. replay writes the candidate to an
 # artifact before gate starts, so gate decides whether it is published and cannot change what is.
+# The published commit carries no workflows, so the push to town/patched starts nothing from upstream.
 
 on:
   schedule:
