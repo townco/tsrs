@@ -1,0 +1,135 @@
+name: Fork sync
+
+# Replays fork/patches.txt onto oxc-project/tsrs main and moves town/patched.
+# Scheduled workflows run only from the default branch, so this file has to live on main.
+# The workflow never pushes main. See docs/FORK.md.
+#
+# The candidate is upstream code, so a compromised commit could run in its build scripts and tests.
+# gate is the only job that executes it, and it holds no write credential. replay and publish hold
+# credentials and only run tools/fork-sync.mjs from this checkout. replay writes the candidate to an
+# artifact before gate starts, so gate decides whether it is published and cannot change what is.
+# The published commit carries no workflows, so the push to town/patched starts nothing from upstream.
+
+on:
+  schedule:
+    # 03:00 America/Los_Angeles, including daylight-saving changes.
+    - cron: "0 3 * * *"
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+env:
+  FORK_SYNC_ARTIFACT_DIR: /tmp/fork-sync-artifact
+
+jobs:
+  replay:
+    if: github.repository == 'townco/tsrs'
+    name: Replay the patch stack onto upstream main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the failure branch
+      pull-requests: write
+    outputs:
+      changed: ${{ steps.replay.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cherry-pick the stack
+        id: replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK_PUSH_TOKEN_SET: ${{ secrets.FORK_PUSH_TOKEN != '' }}
+        run: node tools/fork-sync.mjs replay
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.replay.outputs.changed == 'true'
+        with:
+          name: candidate
+          path: ${{ env.FORK_SYNC_ARTIFACT_DIR }}
+          retention-days: 1
+          if-no-files-found: error
+
+  gate:
+    needs: replay
+    if: needs.replay.outputs.changed == 'true'
+    name: Run upstream's gates on the candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: candidate
+          path: ${{ env.FORK_SYNC_ARTIFACT_DIR }}
+
+      - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
+        with:
+          save-cache: false
+          cache-key: fork-sync
+
+      # Reads .node-version from this checkout, which is the control branch.
+      # tools/fork-sync.mjs installs the candidate worktree's version when it differs.
+      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
+
+      - name: Lint and test the candidate
+        run: node tools/fork-sync.mjs gate
+
+  publish:
+    needs: [replay, gate]
+    name: Push town/patched
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the failure branch
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: candidate
+          path: ${{ env.FORK_SYNC_ARTIFACT_DIR }}
+
+      - name: Back up the old tip and push the candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
+        run: node tools/fork-sync.mjs publish
+
+  report-gate-failure:
+    needs: gate
+    if: failure() && needs.gate.result == 'failure'
+    name: Record the gate failure
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the failure branch
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Open or update the failure pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/fork-sync.mjs report-gate-failure
