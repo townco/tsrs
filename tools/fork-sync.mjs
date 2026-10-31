@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Rebuild town/patched as oxc-project/tsrs main plus fork/patches.txt.
 // Cherry-pick only. Never pushes the default branch. See docs/FORK.md.
+//
+// The candidate's code runs only in the `gate` phase, and only that phase's job holds no write
+// credential. `replay` and `publish` hold credentials and never execute the candidate.
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -21,6 +24,9 @@ const committerName = "github-actions[bot]";
 const committerEmail = "41898282+github-actions[bot]@users.noreply.github.com";
 const dryRun = process.argv.includes("--dry-run");
 const forceTest = process.argv.includes("--test");
+const phase = process.argv.slice(2).find((arg) => !arg.startsWith("--"));
+const artifactDir = process.env.FORK_SYNC_ARTIFACT_DIR ?? path.join(tmpdir(), "tsrs-fork-sync-artifact");
+const candidateRef = "refs/fork-sync/candidate";
 
 class SyncFailure extends Error {
     constructor(message) {
@@ -105,7 +111,8 @@ function readPatchList() {
 
 function requireToken() {
     if (dryRun) return;
-    if (process.env.FORK_PUSH_TOKEN) return;
+    // The replay job holds only whether the secret exists, so a missing token fails before the gates.
+    if (process.env.FORK_PUSH_TOKEN || process.env.FORK_PUSH_TOKEN_SET === "true") return;
     throw new SyncFailure(
         [
             "FORK_PUSH_TOKEN is missing.",
@@ -259,20 +266,6 @@ function prepareTypeScript(worktree) {
     }
     git(["init", "-b", "main", dest]);
     git(["-C", dest, "remote", "add", "origin", "https://github.com/microsoft/TypeScript.git"]);
-    git(["-C", dest, "sparse-checkout", "init", "--cone"]);
-    git(
-        [
-            "-C",
-            dest,
-            "sparse-checkout",
-            "set",
-            "tsc/testdata",
-            "packages/typescript/src",
-            "packages/typescript/lib",
-            "packages/typescript/vendor",
-            "tools/scripts/tsc",
-        ],
-    );
     git(["-C", dest, "fetch", "--depth", "1", "--filter=blob:none", "origin", commit]);
     git(["-c", "advice.detachedHead=false", "-C", dest, "checkout", "FETCH_HEAD"]);
     const head = git(["rev-parse", "HEAD"], { cwd: dest }).stdout.trim();
@@ -325,28 +318,40 @@ function ensureNode(worktree) {
 }
 
 function runGates(worktree) {
+    // Only the job's own environment keeps these out of the candidate's reach on Actions. This
+    // covers a local --dry-run --test.
+    for (const name of ["FORK_PUSH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) delete process.env[name];
     const channel = toolchainChannel(worktree);
     console.log(`toolchain ${channel}`);
     run(
         ["rustup", "toolchain", "install", channel, "--profile", "minimal", "--component", "rustfmt,clippy"],
         { inherit: true },
     );
-    const cargo = (args, env) =>
-        run(["cargo", `+${channel}`, ...args], {
+    const inTree = (argv, env) =>
+        run(argv, {
             cwd: worktree,
             inherit: true,
             env: { RUSTUP_TOOLCHAIN: channel, CARGO_TERM_COLOR: "always", ...env },
         });
+    const cargo = (args, env) => inTree(["cargo", `+${channel}`, ...args], env);
+    const nodePath = ensureNode(worktree);
+    const withNode = { PATH: nodePath };
+    // These are the commands in the candidate's own .github/workflows/ci.yml, which moves with
+    // upstream. The copy on this control branch is older. A command that upstream renames fails
+    // here, and the failure pull request says so.
+    inTree(["node", "tools/lint/source.mjs", "--self-test"], withNode);
+    inTree(["node", "tools/lint/source.mjs"], withNode);
+    inTree(["node", "tools/check-scripts.mjs"], withNode);
     cargo(["fmt", "--all", "--check"]);
     cargo(["clippy", "--locked", "--all-targets", "--workspace", "--config", 'build.warnings="deny"']);
     cargo(["check", "--locked", "--workspace", "--all-targets", "--config", 'build.warnings="deny"']);
-    const nodePath = ensureNode(worktree);
     prepareTypeScript(worktree);
-    // Upstream CI's test command: the `ci` profile (release with debug assertions and overflow
-    // checks). A debug build misses wall-time budgets in the tsrs_api integration tests.
-    cargo(["test", "--profile", "ci", "--locked", "--workspace", "--config", 'build.warnings="deny"'], {
-        PATH: nodePath,
-    });
+    // The `ci` profile: release with debug assertions and overflow checks. A debug build misses
+    // wall-time budgets in the tsrs_api integration tests.
+    cargo(["test", "--profile", "ci", "--locked", "--workspace", "--config", 'build.warnings="deny"'], withNode);
+    cargo(["build", "--profile", "ci", "--locked", "-p", "tsrs_cli", "-p", "tsrs_testrunner", "-p", "tsrs_determinism"], withNode);
+    inTree(["target/ci/tsrs_determinism", "conformance", "--tsrs-test", "target/ci/tsrs-test"], withNode);
+    inTree(["bash", "tools/regressions.sh", "target/ci/tsrs"], withNode);
 }
 
 function remoteTag(name) {
@@ -357,7 +362,7 @@ function remoteTag(name) {
     return exact.split(/\s+/)[0];
 }
 
-function pushWithToken(refspec, lease) {
+function pushWithToken(refspec, lease, { token = process.env.FORK_PUSH_TOKEN, cwd } = {}) {
     const destination = refspec.split(":")[1];
     if (destination === "refs/heads/main" || destination === "refs/heads/master") {
         throw new SyncFailure(`refusing to push ${destination}`);
@@ -366,14 +371,14 @@ function pushWithToken(refspec, lease) {
     const helper = path.join(dir, "credential-helper.sh");
     writeFileSync(
         helper,
-        "#!/bin/sh\ncat >/dev/null\nprintf 'username=x-access-token\\npassword=%s\\n' \"$FORK_PUSH_TOKEN\"\n",
+        "#!/bin/sh\ncat >/dev/null\nprintf 'username=x-access-token\\npassword=%s\\n' \"$PUSH_TOKEN\"\n",
         { mode: 0o700 },
     );
     try {
         const args = ["-c", "credential.helper=", "-c", `credential.helper=!${helper}`, "push"];
         if (lease) args.push(`--force-with-lease=${lease}`);
         args.push(`https://github.com/${repository}.git`, refspec);
-        return git(args, { ok: true, env: { GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" } });
+        return git(args, { cwd, ok: true, env: { GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", PUSH_TOKEN: token } });
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }
@@ -381,6 +386,8 @@ function pushWithToken(refspec, lease) {
 
 function publishPatched(remote, head) {
     if (remote) {
+        // The tip the replay leased. This job's checkout may not have it.
+        git(["fetch", "--no-tags", originRemote, remote.sha]);
         const tag = `fork-backup-${remote.sha}`;
         const existing = remoteTag(tag);
         if (existing && existing !== remote.sha) {
@@ -416,7 +423,7 @@ function stepSummary(text) {
 }
 
 function publishFailure(body) {
-    if (dryRun || reported) return;
+    if (dryRun || phase === "gate" || reported) return;
     reported = true;
     stepSummary(body);
     const authed = run(["gh", "auth", "status"], { ok: true });
@@ -475,7 +482,7 @@ function pushFailureBranch(text) {
             { cwd: worktree },
         );
         const commit = git(["rev-parse", "HEAD"], { cwd: worktree }).stdout.trim();
-        const pushed = git(["push", originRemote, `${commit}:refs/heads/${failureBranch}`], { cwd: worktree, ok: true });
+        const pushed = pushWithToken(`${commit}:refs/heads/${failureBranch}`, undefined, { token: process.env.GH_TOKEN, cwd: worktree });
         if (pushed.code !== 0) {
             throw new SyncFailure(`push of ${failureBranch} was rejected:\n${clip(`${pushed.stdout}\n${pushed.stderr}`)}`);
         }
@@ -508,13 +515,52 @@ function describe(upstreamSha, replayed) {
     return [`upstream ${upstreamSha}`, `kept ${kept}`, `dropped ${dropped}`, `candidate ${replayed.head}`].join("\n");
 }
 
-function main() {
-    assertRepository();
-    requireToken();
+function setChanged(changed) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `changed=${changed}\n`);
+}
+
+function writeCandidate(upstreamSha, replayed, remote) {
+    mkdirSync(artifactDir, { recursive: true });
+    git(["update-ref", candidateRef, replayed.head]);
+    git(["bundle", "create", path.join(artifactDir, "candidate.bundle"), candidateRef]);
+    const { head, tree, kept, dropped } = replayed;
+    writeFileSync(
+        path.join(artifactDir, "candidate.json"),
+        JSON.stringify({ upstream: upstreamSha, head, tree, kept, dropped, remote }),
+    );
+}
+
+// Checks out the commit the replay job recorded, which is what the gate tested and what publish pushes.
+function readCandidate() {
+    const candidate = JSON.parse(readFileSync(path.join(artifactDir, "candidate.json"), "utf8"));
+    for (const sha of [candidate.upstream, candidate.head, candidate.tree]) {
+        if (!/^[0-9a-f]{40}$/.test(sha)) throw new SyncFailure(`candidate names ${clip(sha, 80)}, not a full SHA`);
+    }
+    git(["fetch", "--no-tags", path.join(artifactDir, "candidate.bundle"), `+${candidateRef}:${candidateRef}`]);
+    if (git(["rev-parse", candidateRef]).stdout.trim() !== candidate.head) {
+        throw new SyncFailure(`the bundle's ${candidateRef} is not ${candidate.head}`);
+    }
+    if (git(["rev-parse", `${candidate.head}^{tree}`]).stdout.trim() !== candidate.tree) {
+        throw new SyncFailure(`${candidate.head} does not have tree ${candidate.tree}`);
+    }
+    const base = git(["rev-parse", `${candidate.head}~${candidate.kept.length}`]).stdout.trim();
+    if (base !== candidate.upstream) {
+        throw new SyncFailure(`${candidate.head} is not ${candidate.kept.length} commit(s) on upstream ${candidate.upstream}`);
+    }
+    return candidate;
+}
+
+function fetchAndReplay() {
     const shas = readPatchList();
     const upstreamSha = fetchUpstream();
     for (const sha of shas) fetchPatchCommit(sha);
-    const replayed = replay(upstreamSha, shas);
+    return { upstreamSha, replayed: replay(upstreamSha, shas) };
+}
+
+function replayPhase() {
+    assertRepository();
+    requireToken();
+    const { upstreamSha, replayed } = fetchAndReplay();
     try {
         console.log(describe(upstreamSha, replayed));
         const remote = readRemoteTip();
@@ -523,24 +569,72 @@ function main() {
             console.log(detail);
             stepSummary(`${describe(upstreamSha, replayed)}\n\n${detail}`);
             closeFailure(`Sync succeeded for upstream ${upstreamSha}. ${detail}`);
+            setChanged(false);
             return;
         }
-        if (dryRun && !forceTest) {
+        writeCandidate(upstreamSha, replayed, remote);
+        setChanged(true);
+    } finally {
+        removeWorktree(replayed.worktree);
+    }
+}
+
+function gatePhase() {
+    const candidate = readCandidate();
+    const worktree = mkdtempSync(path.join(tmpdir(), "tsrs-fork-sync-"));
+    try {
+        git(["worktree", "add", "--detach", worktree, candidate.head]);
+        runGates(worktree);
+    } finally {
+        removeWorktree(worktree);
+    }
+}
+
+function publishPhase() {
+    assertRepository();
+    requireToken();
+    const candidate = readCandidate();
+    const summary = describe(candidate.upstream, candidate);
+    const detail = publishPatched(candidate.remote, candidate.head);
+    console.log(detail);
+    stepSummary(`${summary}\n\n${detail}`);
+    closeFailure(`Sync succeeded for upstream ${candidate.upstream}.\n\n${summary}\n${detail}`);
+}
+
+function reportGateFailure() {
+    assertRepository();
+    const runUrl = `${process.env.GITHUB_SERVER_URL}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+    throw new SyncFailure(`A gate failed on the candidate. ${patchedBranch} was not moved. The output is in ${runUrl}`);
+}
+
+function dryRunAll() {
+    assertRepository();
+    const { upstreamSha, replayed } = fetchAndReplay();
+    try {
+        console.log(describe(upstreamSha, replayed));
+        const remote = readRemoteTip();
+        if (remote && remote.tree === replayed.tree) {
+            console.log(`${patchedBranch} already has this tree at ${remote.sha}`);
+            return;
+        }
+        if (!forceTest) {
             console.log(`would run the workspace gates and ${remote ? "force-with-lease " : ""}push ${patchedBranch}`);
             return;
         }
         runGates(replayed.worktree);
-        if (dryRun) {
-            console.log(`gates passed; would ${remote ? "force-with-lease " : ""}push ${replayed.head} to ${patchedBranch}`);
-            return;
-        }
-        const detail = publishPatched(remote, replayed.head);
-        console.log(detail);
-        stepSummary(`${describe(upstreamSha, replayed)}\n\n${detail}`);
-        closeFailure(`Sync succeeded for upstream ${upstreamSha}.\n\n${describe(upstreamSha, replayed)}\n${detail}`);
+        console.log(`gates passed; would ${remote ? "force-with-lease " : ""}push ${replayed.head} to ${patchedBranch}`);
     } finally {
         removeWorktree(replayed.worktree);
     }
+}
+
+const phases = { replay: replayPhase, gate: gatePhase, publish: publishPhase, "report-gate-failure": reportGateFailure };
+
+function main() {
+    if (dryRun) return dryRunAll();
+    const selected = phases[phase];
+    if (!selected) throw new SyncFailure(`name a phase: ${Object.keys(phases).join(", ")}, or pass --dry-run`);
+    return selected();
 }
 
 try {

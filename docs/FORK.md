@@ -46,39 +46,56 @@ force-push them. `townco/town` has pinned `f502bb63865ae942cb109b46c70079cbcc56d
 
 ## What the daily job does
 
-`.github/workflows/fork-sync.yml` runs `node tools/fork-sync.mjs` at 03:00
-`America/Los_Angeles`, and on manual dispatch, only in `townco/tsrs`:
+`.github/workflows/fork-sync.yml` runs at 03:00 `America/Los_Angeles`, and on manual dispatch, only
+in `townco/tsrs`. It runs `tools/fork-sync.mjs` from `main` in separate jobs, because the candidate is
+upstream code and its build scripts and tests can run anything. `gate` is the only job that executes
+the candidate, and it holds no write credential. `replay` and `publish` hold credentials and never
+execute it. No job persists checkout credentials.
 
-1. Require the Actions secret `FORK_PUSH_TOKEN`. If it is missing, stop with that stated and do
-   not push `town/patched`. The job does not fall back to `GITHUB_TOKEN` for that push.
+`replay`, with `GITHUB_TOKEN`:
+
+1. Require the Actions secret `FORK_PUSH_TOKEN`, by reading only whether it exists. If it is missing,
+   stop with that stated. The job does not fall back to `GITHUB_TOKEN` for the `town/patched` push.
 2. Fetch upstream `main` and the commits named in `fork/patches.txt`.
 3. In a temporary worktree at upstream `main`, `git cherry-pick -x` each commit. A commit already
    in upstream history, or whose cherry-pick is empty, is dropped and is not committed again. A
    conflict aborts the replay. Nothing is pushed, and `town/patched` stays at its previous tip.
 4. If `town/patched` already has the replayed tree, stop. The same tree is not given a new SHA.
-5. Otherwise run, in the worktree, with the toolchain in that tree's `rust-toolchain.toml`:
-   `cargo fmt --all --check`,
-   `cargo clippy --locked --all-targets --workspace` with warnings denied,
-   and `cargo check --locked --workspace --all-targets` with warnings denied.
-   `cargo test --profile ci --locked --workspace` with warnings denied (upstream CI's command:
-   a debug build misses the wall-time budgets of the `tsrs_api` integration tests) then runs
-   with Node at the major version in that
-   tree's `.node-version` and with `microsoft/TypeScript` checked out at the
-   `workspace.metadata.typescript` commit, sparse, into `ts-ref` (the same paths CI
-   uses: `tsc/testdata`, `packages/typescript/{src,lib,vendor}`, `tools/scripts/tsc`).
-   The workspace tests fail, rather than skip, when that checkout is missing.
-   Any failure stops the job before the push.
-6. Tag the previous `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not
-   force-moved). Then `git push --force-with-lease` the new tip to `town/patched`. A lost race
+5. Otherwise upload the candidate as an artifact, a git bundle and a record of its SHAs and of the
+   tip it replaces. The later jobs use this commit, so `gate` cannot change what is published.
+
+`gate`, read-only, with the toolchain in the candidate's `rust-toolchain.toml`:
+
+6. Run the commands in the candidate's own `.github/workflows/ci.yml`: the source checks,
+   `cargo fmt --all --check`, `cargo clippy --locked --all-targets --workspace` and
+   `cargo check --locked --workspace --all-targets` with warnings denied,
+   `cargo test --profile ci --locked --workspace` with warnings denied (`ci` is release with debug
+   assertions and overflow checks), the correctness binaries, `tsrs_determinism conformance`, and
+   `tools/regressions.sh`. They run with Node at the major version in that tree's `.node-version`
+   and with `microsoft/TypeScript` checked out at the `workspace.metadata.typescript` commit into
+   `ts-ref`. The workspace tests fail, rather than skip, when that checkout is missing. Any failure
+   stops the workflow before the push. The `ci.yml` on this control branch is older than upstream's,
+   so read the candidate's. When upstream renames a gate, the run fails, and `runGates` in
+   `tools/fork-sync.mjs` is the place to follow it.
+
+`publish`, only after `gate` passes, with `FORK_PUSH_TOKEN`:
+
+7. Tag the previous `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not
+   force-moved). Then `git push --force-with-lease` the candidate to `town/patched`. A lost race
    leaves the previous tip in place.
 
 A failed run opens or updates one draft pull request, `Fork sync failed`, from
 `town/fork-sync-failure`. This repository has GitHub issues disabled. The pull request records
 the failure. Do not merge it. A later successful run closes it. `GITHUB_TOKEN` can push that
-branch and edit the pull request; that path does not need `FORK_PUSH_TOKEN`.
+branch and edit the pull request; that path does not need `FORK_PUSH_TOKEN`. It can open the pull
+request only while the repository's Actions setting "Allow GitHub Actions to create and approve
+pull requests" is on. Without it, the run still fails, and the failure branch records the reason.
+`gate` has no credential to report with, so `report-gate-failure` records that a gate failed and
+links the run.
 
 `node tools/fork-sync.mjs --dry-run` fetches and cherry-picks without the secret, without gates,
-and without pushing. `--dry-run --test` also runs the gates.
+and without pushing. `--dry-run --test` also runs the gates. Otherwise the script runs one named
+phase.
 
 ## Push token
 
