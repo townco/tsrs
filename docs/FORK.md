@@ -91,6 +91,11 @@ secrets. Consumers build crates and do not need them.
    `town/patched` tip as `fork-backup-<40-character sha>` (lightweight, not force-moved). Then
    `git push --force-with-lease` the last commit to `town/patched`. A lost race leaves the previous
    tip in place.
+8. After the push, start the `tsrs Bump` workflow in `townco/town` with `TOWN_BUMP_DISPATCH_TOKEN`.
+   That workflow moves Town's pin to the new `town/patched` and opens or refreshes its draft pull
+   request. Without the secret, or if the dispatch fails, the run logs it and stays green: the
+   branch has moved, and the bump workflow's own daily schedule proposes the pin later. That
+   schedule also covers a `town/patched` push made outside this workflow.
 
 A failed run opens or updates one draft pull request, `Fork sync failed`, from
 `town/fork-sync-failure`. This repository has GitHub issues disabled. The pull request records
@@ -117,6 +122,17 @@ none. An installation token does not fit: it expires after an hour, and this sec
 When the token expires, `publish` fails and the failure pull request records it. The built-in
 `GITHUB_TOKEN` is not used for this push because it cannot push those commits, and a silent fallback
 is how a sync looks green while the branch does not move.
+
+## Bump dispatch token
+
+Create the repository Actions secret `TOWN_BUMP_DISPATCH_TOKEN` by hand. It is optional: without
+it, Town proposes the pin on its own schedule instead of right after a sync.
+
+The token is a fine-grained personal access token whose repository access is only `townco/town`,
+with Actions read and write. Metadata read is required by GitHub. Actions write is what starting a
+workflow needs; it does not give write access to code. It also lets the holder cancel and re-run
+`townco/town` workflows, so keep it out of `replay` and `gate`: only the dispatch step reads it.
+Do not reuse the Town bot's app key here, because that key can write code to `townco/town`.
 
 ## Changing the stack
 

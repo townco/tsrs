@@ -9,6 +9,7 @@ name: Fork sync
 # credentials and only run tools/fork-sync.mjs from this checkout. replay writes the candidate to an
 # artifact before gate starts, so gate decides whether it is published and cannot change what is.
 # The published commit carries no workflows, so the push to town/patched starts nothing from upstream.
+# After the push, publish starts townco/town's tsrs Bump, which proposes the new pin there.
 
 on:
   schedule:
@@ -113,6 +114,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FORK_PUSH_TOKEN: ${{ secrets.FORK_PUSH_TOKEN }}
         run: node tools/fork-sync.mjs publish
+
+      # Runs only after the push above moved town/patched. A missing or failed dispatch does not fail
+      # the sync: the branch has moved, and townco/town's own daily schedule proposes the pin later.
+      - name: Start townco/town's tsrs Bump
+        env:
+          GH_TOKEN: ${{ secrets.TOWN_BUMP_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::notice::TOWN_BUMP_DISPATCH_TOKEN is not set. townco/town's daily tsrs Bump will propose the new pin."
+            exit 0
+          fi
+          if ! gh workflow run tsrs-bump.yml --repo townco/town --ref main; then
+            echo "::warning::Could not start townco/town's tsrs Bump. Its daily schedule will propose the new pin. docs/FORK.md describes the token."
+          fi
 
   report-gate-failure:
     needs: gate
