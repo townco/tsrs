@@ -1157,6 +1157,19 @@ impl Program {
         self.get_checker_pool().get_checker(ctx, None)
     }
 
+    /// townco/tsrs: how many checkers the program's own pool has. Panics on a program with an external pool,
+    /// like `pool`.
+    pub fn checker_count(&self) -> usize {
+        self.pool().checker_count()
+    }
+
+    /// townco/tsrs: the checker that runs `file` now: its static assignment, or the checker that stole it during
+    /// the type-check pass, which later passes over the file use. None for a file outside the program, or when the
+    /// program has no checker pool of its own.
+    pub fn checker_index_of_file(&self, file: P<SourceFile>) -> Option<usize> {
+        self.compiler_checker_pool()?.checker_index_of_file(file)
+    }
+
     // program.go:605
     pub fn for_each_checker_parallel(&self, cb: impl Fn(usize, &mut Checker) + Sync) {
         if let Some(pool) = self.compiler_checker_pool() {
