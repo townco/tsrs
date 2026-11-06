@@ -953,6 +953,16 @@ impl CheckerPoolImpl {
         self.create_checkers()
     }
 
+    // townco/tsrs: read by `Program::checker_count`.
+    pub(crate) fn checker_count(&self) -> usize {
+        self.checker_count
+    }
+
+    // townco/tsrs: read by `Program::checker_index_of_file`.
+    pub(crate) fn checker_index_of_file(&self, file: P<SourceFile>) -> Option<usize> {
+        self.create_checkers().owner_of(file)
+    }
+
     // checkerpool.go:451
     // Runs `cb` for each checker in the pool concurrently, locking and unlocking checker mutexes as it goes,
     // making it safe to call `forEachCheckerParallel` from many threads simultaneously.
