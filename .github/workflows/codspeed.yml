@@ -5,6 +5,10 @@
 # Walltime is disabled by default after exhausting the included monthly Macro Runner minutes. Set the repository variable
 # CODSPEED_WALLTIME_ENABLED=true to re-enable its build and benchmarks; simulation and memory use GitHub-hosted runners.
 # Security: read-only GITHUB_TOKEN plus an OIDC token for the CodSpeed upload, no secrets.
+# The CodSpeed project is oxc-project/tsrs. On any other repository the OIDC upload returns 401
+# "Repository not found" after the benchmarks have already been measured. Upload jobs are skipped
+# there. The build jobs still compile the benchmark binaries. That skip is the missing CodSpeed
+# project, not a compiler regression, and it does not change the jobs on oxc-project/tsrs.
 
 name: CodSpeed
 
@@ -76,7 +80,7 @@ jobs:
           retention-days: 7
 
   build-walltime:
-    if: vars.CODSPEED_WALLTIME_ENABLED == 'true'
+    if: github.repository == 'oxc-project/tsrs' && vars.CODSPEED_WALLTIME_ENABLED == 'true'
     name: Build benchmarks (walltime arm64)
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 90
@@ -109,7 +113,9 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  # Upload is registered for oxc-project/tsrs only. See the header comment.
   benchmarks:
+    if: github.repository == 'oxc-project/tsrs'
     name: Benchmark (${{ matrix.mode }}, ${{ matrix.project }})
     needs: build
     runs-on: ubuntu-latest
@@ -190,7 +196,7 @@ jobs:
           key: ${{ steps.project-cache.outputs.cache-primary-key }}
 
   walltime:
-    if: vars.CODSPEED_WALLTIME_ENABLED == 'true'
+    if: github.repository == 'oxc-project/tsrs' && vars.CODSPEED_WALLTIME_ENABLED == 'true'
     name: Benchmark (walltime, ${{ matrix.project }})
     needs: build-walltime
     runs-on: codspeed-macro-arm64-graviton-ubuntu-22-04
@@ -257,3 +263,18 @@ jobs:
             bench/.work/tsgo
             bench/.work/solutions/${{ matrix.project }}
           key: ${{ steps.project-cache.outputs.cache-primary-key }}
+
+  # The check name is the reason. The upload jobs above are skipped on a fork; they still run on
+  # oxc-project/tsrs. Build jobs are unchanged.
+  fork-codspeed:
+    if: github.repository != 'oxc-project/tsrs'
+    name: CodSpeed upload skipped on this fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: CodSpeed project is oxc-project/tsrs
+        run: |
+          echo "CodSpeed result upload does not run on ${GITHUB_REPOSITORY}."
+          echo "Authentication is the GitHub Actions OIDC token. CodSpeed returns 401: repository not found or the user does not have access to it."
+          echo "The benchmark binaries are still built by the Build benchmarks jobs. The measured run is not a compiler regression."
+          echo "Registering this fork with CodSpeed, or adding a token, is a separate decision. This workflow does not weaken the oxc-project/tsrs jobs."
