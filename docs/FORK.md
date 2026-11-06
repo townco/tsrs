@@ -28,7 +28,7 @@ alias. `townco/town`'s graph context imports that alias. Upstream `0d3458e53f914
 `811d21478f7f4bffac49a93f172a5091735f6540` (`#797`) builds no unit-test harness and lints against tests in
 `src`, so the commit's test is `crates/tsrs_compiler/tests/integration/file_include_test.rs`.
 
-The second commit, `b7ccb1b7a7be3d718c0dc63dcec762232b24cc4b` on branch `town/checker-accessors`,
+The second commit, `229606857babcd938466880c7d2b0949c3339e68` on branch `town/checker-accessors`,
 restores `Program::checker_count` and `Program::checker_index_of_file`, which upstream `#813`
 removed as unused. `townco/town`'s graph-delta keys its check state by the checker count and runs
 the later passes over a file on the checker that checked it, including after stealing; the pool's
